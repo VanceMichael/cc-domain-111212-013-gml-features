@@ -57,8 +57,9 @@ class SourceTests(unittest.TestCase):
         data = self.fixtures[self.name]
         route = dict(base64=base64.b64encode(data).decode(), chunk_bytes=1)
         with ReplaySource({'GET /source':[route]}) as server:
-            status, headers, raw = fetch(server.url+'/source')
+            status, headers, raw, complete = fetch(server.url+'/source')
             self.assertEqual(status, 200)
+            self.assertTrue(complete)
             self.assertEqual(raw, data)
             self.assertEqual(inspect_bytes(raw), inspect_bytes(data))
             self.assertEqual(len(server.requests), 1)
@@ -69,6 +70,15 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(fetch(server.url+'/sequence')[2], b'ok')
             with self.assertRaises(ValueError):
                 fetch(server.url+'/sequence', max_bytes=1)
+
+    def test_transport_reports_incomplete_page(self):
+        data = self.fixtures[self.name]
+        with ReplaySource({'GET /cut':[dict(base64=base64.b64encode(data).decode(),
+                                            disconnect_after=len(data)-40)]}) as server:
+            status, headers, raw, complete = fetch(server.url+'/cut')
+        self.assertEqual(status, 200)
+        self.assertFalse(complete)
+        self.assertLess(len(raw), len(data))
 
     def test_cli_capture_list_and_bad_input(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -85,11 +95,29 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual(app.main(['inspect', str(path)+'.missing']), 2)
             self.assertIn('FileNotFoundError', error.getvalue())
 
+    def test_demo_pages_continues_while_number_matched_unknown(self):
+        report = app.demo_pages()
+        self.assertEqual(report['requests'], 3)
+        self.assertIsNone(report['stopped'])
+        self.assertEqual(report['number_matched'], ['unknown', 'unknown', 'unknown'])
+        self.assertEqual([page['features'] for page in report['pages']],
+                         [['p1'], ['p2'], ['p3']])
+        self.assertTrue(all(page['complete'] for page in report['pages']))
+
     def test_demo_reaches_source_and_archive(self):
         report = app.demo()
-        self.assertEqual(report['captures'], 1)
-        self.assertEqual(report['requests'], 1)
-        self.assertTrue(report['same_capture'])
+        self.assertEqual(report['captures'], len(report['demo']))
+        self.assertEqual(report['requests'], len(report['demo']))
+        names = {case['input'] for case in report['demo']}
+        self.assertEqual(names, {'crs84.xml', 'dim3.xml', 'hole.xml',
+                                 'forward.xml', 'broken.xml'})
+        for case in report['demo']:
+            self.assertEqual(case['status'], 200)
+            self.assertTrue(case['transport_complete'])
+            self.assertIn('page', case)
+        # 演示同时覆盖可转换与明确拒绝转换两类结果。
+        self.assertGreater(sum(case['converted'] for case in report['demo']), 0)
+        self.assertGreater(sum(len(case['not_converted']) for case in report['demo']), 0)
 
 if __name__ == '__main__':
     unittest.main()

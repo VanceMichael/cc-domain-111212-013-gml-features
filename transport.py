@@ -1,6 +1,7 @@
 import base64
 from collections import Counter
 from contextlib import AbstractContextManager
+from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Lock, Thread
@@ -74,16 +75,37 @@ class ReplaySource(AbstractContextManager):
         self.thread.join(timeout=2)
 
 def fetch(url, headers=None, max_bytes=16*1024*1024):
+    """返回 (状态, 头, 原始字节, 是否完整收完)。
+
+    非 200 或读取中途断开时仍返回已收到的字节，但 complete 为 False；调用方据此
+    判定页面不完整，而不是让解析成功与否替传输层说话。
+    """
     request = Request(url, headers=headers or {})
     try:
         response = urlopen(request, timeout=3)
     except HTTPError as error:
         response = error
+    complete = True
     with response:
-        raw = response.read(max_bytes+1)
+        chunks = []
+        remaining = max_bytes + 1
+        try:
+            while remaining > 0:
+                chunk = response.read(min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except (ConnectionResetError, IncompleteRead) as error:
+            complete = False
+        raw = b''.join(chunks)
         if len(raw) > max_bytes:
             raise ValueError('响应超过接收限制')
-        return response.status, dict(response.headers), raw
+        expected = response.headers.get('Content-Length')
+        if complete and expected is not None and expected.isdigit() \
+                and int(expected) != len(raw):
+            complete = False
+        return response.status, dict(response.headers), raw, complete
 
 def main():
     import argparse

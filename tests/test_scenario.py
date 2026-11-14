@@ -13,10 +13,17 @@ class ScenarioTests(unittest.TestCase):
                 if method != 'GET':
                     continue
                 response = responses[0]
-                status, headers, raw = fetch(server.url+path,headers=response.get('require_headers'))
+                status, headers, raw, complete = fetch(server.url+path,
+                                                       headers=response.get('require_headers'))
                 self.assertEqual(status,response.get('status',200),key)
                 expected = base64.b64decode(response['base64']) if 'base64' in response else response.get('text','').encode()
-                self.assertEqual(raw,expected,key)
+                # 演练集中只保留一个故意断开的来源；其余必须完整收完。
+                if 'disconnect_after' in response:
+                    self.assertFalse(complete, key)
+                    self.assertEqual(raw, expected[:response['disconnect_after']], key)
+                else:
+                    self.assertTrue(complete, key)
+                    self.assertEqual(raw,expected,key)
 
     def test_export_is_deterministic(self):
         self.assertEqual(scenario(),scenario())
